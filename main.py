@@ -1,4 +1,5 @@
 import os
+import fitz  # PyMuPDF for PDF extraction
 import networkx as nx
 import google.generativeai as genai
 import json
@@ -7,8 +8,22 @@ from typing import List, Dict, Any
 # Configure Gemini - ensure GOOGLE_API_KEY is set in your environment
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
+def extract_text_from_pdf(pdf_path: str) -> str:
+    """Extract text from a PDF file."""
+    try:
+        doc = fitz.open(pdf_path)
+        text = "\n".join([page.get_text("text") for page in doc])
+        return text
+    except Exception as e:
+        print(f"Error reading PDF: {e}")
+        return ""
+
+def chunk_text(text: str, chunk_size: int = 2000) -> List[str]:
+    """Break large text into smaller chunks."""
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
 def extract_entities_relationships(text: str) -> Dict[str, Any]:
-    """Extract entities and relationships with robust error handling."""
+    """Extract entities and relationships from text using Gemini."""
     prompt = f"""Extract entities and relationships from this text, returning ONLY valid JSON:
     
     {{
@@ -23,15 +38,9 @@ def extract_entities_relationships(text: str) -> Dict[str, Any]:
         model = genai.GenerativeModel("gemini-1.5-pro-latest")
         response = model.generate_content(prompt)
         
-        # Handle different response formats
-        if hasattr(response, 'text'):
-            response_text = response.text
-        elif hasattr(response, 'candidates'):
-            response_text = response.candidates[0].content.parts[0].text
-        else:
-            raise ValueError("Unexpected response format")
+        # Handle response formats
+        response_text = response.text if hasattr(response, 'text') else json.dumps({"entities": [], "relationships": []})
         
-        # Clean the response to get pure JSON
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
         json_str = response_text[json_start:json_end]
@@ -41,63 +50,38 @@ def extract_entities_relationships(text: str) -> Dict[str, Any]:
         print(f"Extraction error: {str(e)}")
         return {"entities": [], "relationships": []}
 
-def validate_relationships(text: str, relationships: List) -> List:
-    """Validate relationships with better prompt engineering."""
-    prompt = f"""Verify which relationships are correct in this text. 
-    Return ONLY a JSON array of valid relationships:
-    
-    {{
-        "valid_relationships": [["subject", "relation", "object"]]
-    }}
-    
-    Text: "{text}"
-    Relationships to validate: {relationships}
-    """
-    
+def build_knowledge_graph(pdf_path: str) -> nx.DiGraph:
+    """Build knowledge graph from financial report PDF."""
     try:
-        model = genai.GenerativeModel("gemini-1.5-pro-latest")
-        response = model.generate_content(prompt)
-        response_text = response.text
-        
-        # Extract JSON from response
-        json_start = response_text.find('{')
-        json_end = response_text.rfind('}') + 1
-        result = json.loads(response_text[json_start:json_end])
-        
-        return result.get("valid_relationships", [])
-    except Exception as e:
-        print(f"Validation error: {str(e)}")
-        return relationships  # Fallback to original
-
-def build_knowledge_graph(text: str) -> nx.DiGraph:
-    """Build knowledge graph with enhanced error handling."""
-    try:
-        data = extract_entities_relationships(text)
-        valid_rels = validate_relationships(text, data.get("relationships", []))
+        text = extract_text_from_pdf(pdf_path)
+        chunks = chunk_text(text)
         
         graph = nx.DiGraph()
-        graph.add_nodes_from(data.get("entities", []))
         
-        for rel in valid_rels:
-            if len(rel) == 3:  # Ensure proper (subject, relation, object) format
-                graph.add_edge(rel[0], rel[2], relation=rel[1])
+        for chunk in chunks:
+            data = extract_entities_relationships(chunk)
+            
+            graph.add_nodes_from(data.get("entities", []))
+            for rel in data.get("relationships", []):
+                if len(rel) == 3:
+                    graph.add_edge(rel[0], rel[2], relation=rel[1])
         
         return graph
     except Exception as e:
         print(f"Graph construction error: {str(e)}")
-        return nx.DiGraph()  # Return empty graph on failure
+        return nx.DiGraph()
 
 if __name__ == "__main__":
-    sample_text = "Elon Musk founded SpaceX in 2002. Google acquired DeepMind in 2014."
-    kg = build_knowledge_graph(sample_text)
-    
+    pdf_path = "financial_report.pdf"  # Update this with the actual file path
+    kg = build_knowledge_graph(pdf_path)
+
     print("\nKnowledge Graph:")
     print("Nodes:", kg.nodes())
     print("Edges with relations:")
     for u, v, data in kg.edges(data=True):
         print(f"  {u} --{data['relation']}--> {v}")
-    
-    # Basic visualization (requires matplotlib)
+
+    # Visualization
     try:
         import matplotlib.pyplot as plt
         pos = nx.spring_layout(kg)
