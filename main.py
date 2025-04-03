@@ -5,7 +5,7 @@ import google.generativeai as genai
 import json
 from typing import List, Dict, Any
 
-# Configure Gemini - ensure GOOGLE_API_KEY is set in your environment
+# Configure Gemini - Ensure GOOGLE_API_KEY is set in your environment
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def extract_text_from_pdf(pdf_path: str) -> str:
@@ -23,7 +23,7 @@ def chunk_text(text: str, chunk_size: int = 2000) -> List[str]:
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 def extract_entities_relationships(text: str) -> Dict[str, Any]:
-    """Extract entities and relationships from text using Gemini."""
+    """Extract entities and relationships from text using Gemini API."""
     prompt = f"""Extract entities and relationships from this text, returning ONLY valid JSON:
     
     {{
@@ -57,29 +57,56 @@ def build_knowledge_graph(pdf_path: str) -> nx.DiGraph:
         chunks = chunk_text(text)
         
         graph = nx.DiGraph()
-        
+        all_entities = set()
+        all_relationships = []
+
         for chunk in chunks:
             data = extract_entities_relationships(chunk)
             
-            graph.add_nodes_from(data.get("entities", []))
+            # Add nodes (entities)
+            entities = data.get("entities", [])
+            graph.add_nodes_from(entities)
+            all_entities.update(entities)
+
+            # Add edges (relationships)
             for rel in data.get("relationships", []):
                 if len(rel) == 3:
                     graph.add_edge(rel[0], rel[2], relation=rel[1])
-        
-        return graph
+                    all_relationships.append({"subject": rel[0], "relation": rel[1], "object": rel[2]})
+
+        return graph, list(all_entities), all_relationships
     except Exception as e:
         print(f"Graph construction error: {str(e)}")
-        return nx.DiGraph()
+        return nx.DiGraph(), [], []
 
 if __name__ == "__main__":
     pdf_path = "financial_report.pdf"  # Update this with the actual file path
-    kg = build_knowledge_graph(pdf_path)
+    kg, entities, relationships = build_knowledge_graph(pdf_path)
 
-    print("\nKnowledge Graph:")
-    print("Nodes:", kg.nodes())
-    print("Edges with relations:")
-    for u, v, data in kg.edges(data=True):
-        print(f"  {u} --{data['relation']}--> {v}")
+    # Print summary
+    print("\nKnowledge Graph Stats:")
+    print(f"Total Entities: {len(entities)}")
+    print(f"Total Relationships: {len(relationships)}\n")
+
+    print("Entities:")
+    print(entities)
+
+    print("\nRelationships:")
+    for rel in relationships:
+        print(f"{rel['subject']} --{rel['relation']}--> {rel['object']}")
+
+    # Save to JSON file
+    output_data = {
+        "total_entities": len(entities),
+        "total_relationships": len(relationships),
+        "entities": entities,
+        "relationships": relationships
+    }
+
+    with open("knowledge_graph.json", "w") as json_file:
+        json.dump(output_data, json_file, indent=4)
+
+    print("\n✅ Knowledge graph data saved to 'knowledge_graph.json'")
 
     # Visualization
     try:
@@ -90,4 +117,5 @@ if __name__ == "__main__":
         nx.draw_networkx_edge_labels(kg, pos, edge_labels=edge_labels)
         plt.show()
     except ImportError:
-        print("\nInstall matplotlib for visualization: pip install matplotlib")
+        print("\n⚠️ Install matplotlib for visualization: pip install matplotlib")
+
